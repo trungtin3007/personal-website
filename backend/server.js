@@ -1,8 +1,13 @@
 import "dotenv/config";
+import dns from "node:dns";
 import express from "express";
 import cors from "cors";
 import OpenAI from "openai";
 import nodemailer from "nodemailer";
+
+// Render's network doesn't route outbound IPv6, but Node resolves
+// smtp.gmail.com to an IPv6 address first by default, causing ENETUNREACH.
+dns.setDefaultResultOrder("ipv4first");
 
 const app = express();
 const PORT = process.env.PORT || 3002;
