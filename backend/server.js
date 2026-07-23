@@ -1,36 +1,17 @@
 import "dotenv/config";
-import dns from "node:dns/promises";
 import express from "express";
 import cors from "cors";
 import OpenAI from "openai";
-import nodemailer from "nodemailer";
+import { Resend } from "resend";
 
 const app = express();
 const PORT = process.env.PORT || 3002;
 app.use(cors());
 app.use(express.json());
 
-const SMTP_HOST = "smtp.gmail.com";
-
-// Render's containers have an IPv6 interface with no working outbound route,
-// so plain getaddrinfo-based lookups (net.connect, dns.lookup) keep returning
-// smtp.gmail.com's IPv6 address and failing with ENETUNREACH — even with
-// dns.setDefaultResultOrder("ipv4first"). dns.resolve4() is a plain DNS query
-// unaffected by that address-family filtering, so we connect to the literal
-// IPv4 address instead and set servername for TLS certificate validation.
-async function createMailer() {
-  const [ip] = await dns.resolve4(SMTP_HOST);
-  return nodemailer.createTransport({
-    host: ip,
-    port: 465,
-    secure: true,
-    tls: { servername: SMTP_HOST },
-    auth: {
-      user: process.env.EMAIL_USER,
-      pass: process.env.EMAIL_APP_PASSWORD,
-    },
-  });
-}
+// Render's free tier blocks outbound SMTP ports, so raw SMTP (Nodemailer)
+// can't connect at all. Resend sends over HTTPS instead, which isn't blocked.
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 // Gemini, through its OpenAI-compatible endpoint (note the trailing slash!)
 const ai = new OpenAI({
@@ -122,14 +103,14 @@ app.post("/api/contact", async (req, res) => {
     const safeName = stripHeaderInjection(String(name)).slice(0, 200);
     const safeEmail = stripHeaderInjection(String(email)).slice(0, 200);
 
-    const mailer = await createMailer();
-    await mailer.sendMail({
-      from: process.env.EMAIL_USER,
+    const { error: sendError } = await resend.emails.send({
+      from: "Portfolio Contact <onboarding@resend.dev>",
       to: process.env.EMAIL_USER,
       replyTo: safeEmail,
       subject: `Portfolio contact from ${safeName}`,
       text: `${message}\n\n— ${safeName} (${safeEmail})`,
     });
+    if (sendError) throw sendError;
 
     res.json({ ok: true });
   } catch (err) {
