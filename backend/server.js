@@ -1,26 +1,36 @@
 import "dotenv/config";
-import dns from "node:dns";
+import dns from "node:dns/promises";
 import express from "express";
 import cors from "cors";
 import OpenAI from "openai";
 import nodemailer from "nodemailer";
-
-// Render's network doesn't route outbound IPv6, but Node resolves
-// smtp.gmail.com to an IPv6 address first by default, causing ENETUNREACH.
-dns.setDefaultResultOrder("ipv4first");
 
 const app = express();
 const PORT = process.env.PORT || 3002;
 app.use(cors());
 app.use(express.json());
 
-const mailer = nodemailer.createTransport({
-  service: "gmail",
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_APP_PASSWORD,
-  },
-});
+const SMTP_HOST = "smtp.gmail.com";
+
+// Render's containers have an IPv6 interface with no working outbound route,
+// so plain getaddrinfo-based lookups (net.connect, dns.lookup) keep returning
+// smtp.gmail.com's IPv6 address and failing with ENETUNREACH — even with
+// dns.setDefaultResultOrder("ipv4first"). dns.resolve4() is a plain DNS query
+// unaffected by that address-family filtering, so we connect to the literal
+// IPv4 address instead and set servername for TLS certificate validation.
+async function createMailer() {
+  const [ip] = await dns.resolve4(SMTP_HOST);
+  return nodemailer.createTransport({
+    host: ip,
+    port: 465,
+    secure: true,
+    tls: { servername: SMTP_HOST },
+    auth: {
+      user: process.env.EMAIL_USER,
+      pass: process.env.EMAIL_APP_PASSWORD,
+    },
+  });
+}
 
 // Gemini, through its OpenAI-compatible endpoint (note the trailing slash!)
 const ai = new OpenAI({
@@ -112,6 +122,7 @@ app.post("/api/contact", async (req, res) => {
     const safeName = stripHeaderInjection(String(name)).slice(0, 200);
     const safeEmail = stripHeaderInjection(String(email)).slice(0, 200);
 
+    const mailer = await createMailer();
     await mailer.sendMail({
       from: process.env.EMAIL_USER,
       to: process.env.EMAIL_USER,
